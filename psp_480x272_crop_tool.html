@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>PSP 480×272 裁剪工具</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body {
+    font-family:-apple-system,"PingFang SC",sans-serif;
+    background:#0d0d12; color:#eee; min-height:100vh;
+    display:flex; flex-direction:column; align-items:center; padding:12px;
+  }
+  h1 { font-size:17px; font-weight:600; margin:8px 0 12px; }
+  #pick {
+    width:100%; max-width:560px; padding:14px; border:none; border-radius:12px;
+    background:#2b6cf5; color:#fff; font-size:16px; font-weight:600; cursor:pointer;
+  }
+  #viewport {
+    position:relative; width:100%; max-width:560px; aspect-ratio:480/272;
+    overflow:hidden; background:#222; border-radius:10px; margin:14px 0 10px;
+    touch-action:none; user-select:none; -webkit-user-select:none; box-shadow:0 0 0 1px #333;
+  }
+  #viewport img { position:absolute; top:0; left:0; transform-origin:0 0; pointer-events:none; }
+  #hint { font-size:12px; color:#888; margin-bottom:10px; }
+  #controls { width:100%; max-width:560px; display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  #controls button {
+    flex:0 0 auto; width:46px; height:46px; border:none; border-radius:10px;
+    background:#2a2a33; color:#fff; font-size:22px; cursor:pointer;
+  }
+  #zoom { flex:1; accent-color:#2b6cf5; height:46px; }
+  #actions { width:100%; max-width:560px; display:flex; gap:10px; }
+  #actions button {
+    flex:1; padding:14px; border:none; border-radius:12px; font-size:16px; font-weight:600; cursor:pointer;
+  }
+  #save { background:#22a45d; color:#fff; }
+  #reset { background:#2a2a33; color:#ccc; }
+  #rotate { background:#2a2a33; color:#ccc; }
+  #toast {
+    position:fixed; left:50%; bottom:40px; transform:translateX(-50%);
+    background:#333; color:#fff; padding:10px 18px; border-radius:20px; font-size:14px;
+    opacity:0; transition:opacity .3s; pointer-events:none;
+  }
+</style>
+</head>
+<body>
+  <h1>PSP 背景裁剪（480×272）</h1>
+  <button id="pick">📷 选择图片</button>
+  <input type="file" id="file" accept="image/*" style="display:none">
+  <div id="viewport"><img id="img" draggable="false"></div>
+  <div id="hint">单指拖动 · 双指缩放 · 或用下方滑杆</div>
+  <div id="controls">
+    <button id="zin">＋</button>
+    <input type="range" id="zoom" min="100" max="400" value="100">
+    <button id="zout">－</button>
+  </div>
+  <div id="actions">
+    <button id="rotate">↻ 旋转</button>
+    <button id="reset">重置</button>
+    <button id="save">✓ 导出 JPG</button>
+  </div>
+  <div id="toast"></div>
+
+<script>
+const viewport = document.getElementById('viewport');
+const imgEl = document.getElementById('img');
+const fileInput = document.getElementById('file');
+const slider = document.getElementById('zoom');
+const toast = document.getElementById('toast');
+
+let source = null;        // HTMLImageElement 或 canvas
+let nw = 0, nh = 0;       // 源图尺寸
+let W = 0, H = 0;         // 视口 css 尺寸
+let base = 1;             // 刚好铺满视口的缩放
+let scale = 1, tx = 0, ty = 0;
+let rot = 0;
+
+function showToast(msg){
+  toast.textContent = msg;
+  toast.style.opacity = 1;
+  setTimeout(()=>toast.style.opacity = 0, 2000);
+}
+
+function loadFile(file){
+  const url = URL.createObjectURL(file);
+  const im = new Image();
+  im.onload = () => { source = im; rot = 0; resetView(); URL.revokeObjectURL(url); };
+  im.src = url;
+}
+
+function resetView(){
+  const r = viewport.getBoundingClientRect();
+  W = r.width; H = r.height;
+  nw = source.width || source.naturalWidth;
+  nh = source.height || source.naturalHeight;
+  base = Math.max(W/nw, H/nh);
+  scale = base; tx = (W - nw*scale)/2; ty = (H - nh*scale)/2;
+  imgEl.src = source.toDataURL ? source.toDataURL() : source.src;
+  apply();
+}
+
+function clamp(){
+  const w = nw*scale, h = nh*scale;
+  tx = Math.min(0, Math.max(W - w, tx));
+  ty = Math.min(0, Math.max(H - h, ty));
+}
+
+function apply(){
+  clamp();
+  imgEl.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`;
+  slider.value = Math.round(scale/base*100);
+}
+
+function zoomAt(cx, cy, factor){
+  const r1 = scale*factor;
+  if(r1 < base) factor = base/scale;
+  tx = cx - (cx - tx)*factor;
+  ty = cy - (ty - ty)*factor;
+  ty = cy - (cy - ty)*factor;
+  scale *= factor;
+  apply();
+}
+
+/* ---- 触摸：单指拖动 + 双指缩放 ---- */
+let touches = new Map(), lastDist = 0, mid = null;
+
+viewport.addEventListener('touchstart', e => {
+  e.preventDefault();
+  for(const t of e.changedTouches) touches.set(t.identifier, {x:t.clientX, y:t.clientY});
+  if(touches.size === 2){
+    const [a,b] = [...touches.values()];
+    lastDist = Math.hypot(a.x-b.x, a.y-b.y);
+    mid = {x:(a.x+b.x)/2, y:(a.y+b.y)/2};
+  }
+}, {passive:false});
+
+viewport.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const rect = viewport.getBoundingClientRect();
+  if(touches.size === 2 && e.touches.length === 2){
+    for(const t of e.changedTouches) touches.set(t.identifier, {x:t.clientX, y:t.clientY});
+    const [a,b] = [...touches.values()];
+    const d = Math.hypot(a.x-b.x, a.y-b.y);
+    const m = {x:(a.x+b.x)/2 - rect.left, y:(a.y+b.y)/2 - rect.top};
+    const factor = d/lastDist;
+    tx = m.x - (mid.x - tx)*factor;
+    ty = m.y - (mid.y - ty)*factor;
+    scale *= factor;
+    lastDist = d; mid = {x:m.x, y:m.y};
+    apply();
+  } else if(e.touches.length === 1){
+    const t = e.touches[0];
+    const prev = touches.get(t.identifier);
+    if(prev){
+      tx += t.clientX - prev.x;
+      ty += t.clientY - prev.y;
+      touches.set(t.identifier, {x:t.clientX, y:t.clientY});
+      apply();
+    }
+  }
+}, {passive:false});
+
+const endTouch = e => { for(const t of e.changedTouches) touches.delete(t.identifier); };
+viewport.addEventListener('touchend', endTouch);
+viewport.addEventListener('touchcancel', endTouch);
+
+/* ---- 鼠标（电脑调试用） ---- */
+let dragging = false, last = null;
+viewport.addEventListener('mousedown', e => { dragging = true; last = {x:e.clientX, y:e.clientY}; });
+window.addEventListener('mousemove', e => {
+  if(!dragging) return;
+  tx += e.clientX - last.x; ty += e.clientY - last.y;
+  last = {x:e.clientX, y:e.clientY}; apply();
+});
+window.addEventListener('mouseup', () => dragging = false);
+viewport.addEventListener('wheel', e => {
+  e.preventDefault();
+  const r = viewport.getBoundingClientRect();
+  zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.1 : 0.9);
+}, {passive:false});
+
+/* ---- 控件 ---- */
+document.getElementById('pick').onclick = () => fileInput.click();
+fileInput.onchange = () => { if(fileInput.files[0]) loadFile(fileInput.files[0]); };
+slider.oninput = () => { scale = base * slider.value/100; apply(); };
+document.getElementById('zin').onclick = () => zoomAt(W/2, H/2, 1.25);
+document.getElementById('zout').onclick = () => zoomAt(W/2, H/2, 0.8);
+document.getElementById('reset').onclick = () => { if(source) resetView(); };
+
+document.getElementById('rotate').onclick = () => {
+  if(!source) return;
+  rot = (rot + 90) % 360;
+  const c = document.createElement('canvas');
+  c.width = nh; c.height = nw;
+  const ctx = c.getContext('2d');
+  ctx.translate(c.width/2, c.height/2);
+  ctx.rotate(rot*Math.PI/180);
+  ctx.drawImage(source, -nw/2, -nh/2);
+  source = c;
+  const tmp = nw; nw = nh; nh = tmp;
+  base = Math.max(W/nw, H/nh);
+  scale = base; tx = (W-nw*scale)/2; ty = (H-nh*scale)/2;
+  apply();
+};
+
+/* ---- 导出 480x272 JPG ---- */
+document.getElementById('save').onclick = () => {
+  if(!source){ showToast('请先选择图片'); return; }
+  const c = document.createElement('canvas');
+  c.width = 480; c.height = 272;
+  const f = 480 / W;
+  c.getContext('2d').drawImage(source, tx*f, ty*f, nw*scale*f, nh*scale*f);
+  c.toBlob(async blob => {
+    const file = new File([blob], 'psp-bg-' + Date.now() + '.jpg', {type:'image/jpeg'});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      try { await navigator.share({files:[file]}); showToast('已打开分享面板'); }
+      catch(e){ if(e.name !== 'AbortError') showToast('分享取消'); }
+    } else {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = file.name;
+      a.click();
+      showToast('已下载');
+    }
+  }, 'image/jpeg', 0.92);
+};
+
+window.addEventListener('resize', () => { if(source) resetView(); });
+</script>
+</body>
+</html>
